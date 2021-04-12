@@ -16,12 +16,15 @@ import os
 import shutil
 # from argparse import RawTextHelpFormatter
 import sys
+import numpy as np
 
 import _init_paths
 from BoundingBox import BoundingBox
 from BoundingBoxes import BoundingBoxes
 from Evaluator import *
 from utils import BBFormat
+import json
+from tqdm import tqdm
 
 
 # Validate formats
@@ -112,7 +115,8 @@ def getBoundingBoxes(directory,
     # Class_id represents the class of the bounding box
     # x, y represents the most top-left coordinates of the bounding box
     # x2, y2 represents the most bottom-right coordinates of the bounding box
-    for f in files:
+    print(f"Files to load: {len(files)}")
+    for f in tqdm(files, disable=not(args.verbose)):
         nameOfImage = f.replace(".txt", "")
         fh1 = open(f, "r")
         for line in fh1:
@@ -141,11 +145,11 @@ def getBoundingBoxes(directory,
             else:
                 # idClass = int(splitLine[0]) #class
                 idClass = (splitLine[0])  # class
-                confidence = float(splitLine[1])
-                x = float(splitLine[2])
-                y = float(splitLine[3])
-                w = float(splitLine[4])
-                h = float(splitLine[5])
+                x = float(splitLine[1])
+                y = float(splitLine[2])
+                w = float(splitLine[3])
+                h = float(splitLine[4])
+                confidence = float(splitLine[5])
                 bb = BoundingBox(
                     nameOfImage,
                     idClass,
@@ -246,6 +250,20 @@ parser.add_argument(
     dest='showPlot',
     action='store_false',
     help='no plot is shown during execution')
+parser.add_argument(
+    '--thsMethod',
+    default="maxp",
+    help='Method used to compute optimal thresholds by class. {maxp, maxf1}')
+parser.add_argument(
+    '--minR',
+    default=0.2,
+    type=float,
+    help='Minimum recall allowed in maxp method')
+parser.add_argument(
+    '--verbose',
+    action='store_true',
+    help='enables tqdm log')
+
 args = parser.parse_args()
 
 iouThreshold = args.iouThreshold
@@ -322,9 +340,11 @@ showPlot = args.showPlot
 # print('showPlot %s' % showPlot)
 
 # Get groundtruth boxes
+print("Loding ground thruth labels")
 allBoundingBoxes, allClasses = getBoundingBoxes(
     gtFolder, True, gtFormat, gtCoordType, imgSize=imgSize)
 # Get detected boxes
+print("\nLoding predicted labels")
 allBoundingBoxes, allClasses = getBoundingBoxes(
     detFolder, False, detFormat, detCoordType, allBoundingBoxes, allClasses, imgSize=imgSize)
 allClasses.sort()
@@ -334,6 +354,7 @@ acc_AP = 0
 validClasses = 0
 
 # Plot Precision x Recall curve
+print("\nGetting Metrics")
 detections = evaluator.PlotPrecisionRecallCurve(
     allBoundingBoxes,  # Object containing all bounding boxes (ground truths and detections)
     IOUThreshold=iouThreshold,  # IOU threshold
@@ -341,7 +362,20 @@ detections = evaluator.PlotPrecisionRecallCurve(
     showAP=True,  # Show Average Precision in the title of the plot
     showInterpolatedPrecision=False,  # Don't plot the interpolated precision curve
     savePath=savePath,
-    showGraphic=showPlot)
+    showGraphic=showPlot,
+    verbose=args.verbose)
+
+results = {}
+for metricsPerClass in detections:
+    tmp = {metricsPerClass['class']: {
+        "thresholds": np.array(metricsPerClass['thresholds']).astype(float).tolist(),
+        "precision": metricsPerClass['precision'].astype(float).tolist(),
+        "recall": metricsPerClass['recall'].astype(float).tolist(),
+        "AP": float(metricsPerClass['AP']),
+    }}
+    results.update(tmp)
+with open(os.path.join(savePath, 'results.json'), 'w') as outfile:
+    json.dump(results, outfile)
 
 f = open(os.path.join(savePath, 'results.txt'), 'w')
 f.write('Object Detection Metrics\n')
@@ -349,31 +383,67 @@ f.write('https://github.com/rafaelpadilla/Object-Detection-Metrics\n\n\n')
 f.write('Average Precision (AP), Precision and Recall per class:')
 
 # each detection is a class
+optimal_ths = {}
 for metricsPerClass in detections:
 
     # Get metric values per each class
     cl = metricsPerClass['class']
+    thresholds = metricsPerClass['thresholds']
     ap = metricsPerClass['AP']
     precision = metricsPerClass['precision']
     recall = metricsPerClass['recall']
     totalPositives = metricsPerClass['total positives']
     total_TP = metricsPerClass['total TP']
     total_FP = metricsPerClass['total FP']
+    
+    if np.array(precision).size != 0:
+        if args.thsMethod == "maxp":
+            min_precision = 0.96
+            min_recall = args.minR
+            _precision = np.array(precision)
+            _recall = np.array(recall)
 
+            recall_mask = _recall < min_recall
+            if any(recall_mask):
+                _precision[_recall < min_recall] = 0.0
+
+            precision_mask = _precision >= min_precision
+            if any(precision_mask):
+                inds = np.where(precision_mask)[0]
+                ind = inds.max()
+            else:
+                ind = np.argmax(_precision)
+
+        elif args.thsMethod == "maxf1":
+            fscore = ( 2*precision*recall ) / ( precision+recall )
+            ind = np.argmax(fscore)
+
+        optimal_th = thresholds[ind]
+    else:
+        optimal_th = 0.0
+    optimal_ths.update({metricsPerClass["class"]:optimal_th})
+    
     if totalPositives > 0:
         validClasses = validClasses + 1
         acc_AP = acc_AP + ap
-        prec = ['%.2f' % p for p in precision]
-        rec = ['%.2f' % r for r in recall]
-        ap_str = "{0:.2f}%".format(ap * 100)
+        prec = ['%.4f' % p for p in precision]
+        rec = ['%.4f' % r for r in recall]
+        ths = ['%.4f' % t for t in thresholds]
+        ap_str = "{0:.4f}%".format(ap * 100)
         # ap_str = "{0:.4f}%".format(ap * 100)
         print('AP: %s (%s)' % (ap_str, cl))
         f.write('\n\nClass: %s' % cl)
         f.write('\nAP: %s' % ap_str)
         f.write('\nPrecision: %s' % prec)
         f.write('\nRecall: %s' % rec)
+        f.write('\nThresholds: %s' % ths)
+        f.write('\nOptimal Threshold: %.4f' % optimal_th)
 
 mAP = acc_AP / validClasses
 mAP_str = "{0:.2f}%".format(mAP * 100)
 print('mAP: %s' % mAP_str)
+print(f'Optimal thresholds: {optimal_ths}')
 f.write('\n\n\nmAP: %s' % mAP_str)
+
+with open(os.path.join(savePath, 'optimal_ths.json'), 'w') as outfile:
+    json.dump(optimal_ths, outfile)

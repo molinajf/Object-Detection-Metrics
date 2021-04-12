@@ -14,6 +14,7 @@ from collections import Counter
 
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm
 
 from BoundingBox import *
 from BoundingBoxes import *
@@ -24,7 +25,8 @@ class Evaluator:
     def GetPascalVOCMetrics(self,
                             boundingboxes,
                             IOUThreshold=0.5,
-                            method=MethodAveragePrecision.EveryPointInterpolation):
+                            method=MethodAveragePrecision.EveryPointInterpolation,
+                            verbose=True):
         """Get the metrics used by the VOC Pascal 2012 challenge.
         Get
         Args:
@@ -78,7 +80,8 @@ class Evaluator:
         classes = sorted(classes)
         # Precision x Recall is obtained individually by each class
         # Loop through by classes
-        for c in classes:
+        print("Analysing model classes.")
+        for c in tqdm(classes, desc="Classes Analysis Progress", disable=not(verbose)):
             # Get only detection of class c
             dects = []
             [dects.append(d) for d in detections if d[1] == c]
@@ -88,6 +91,7 @@ class Evaluator:
             npos = len(gts)
             # sort detections by decreasing confidence
             dects = sorted(dects, key=lambda conf: conf[2], reverse=True)
+            ths = [conf[2] for conf in  dects]
             TP = np.zeros(len(dects))
             FP = np.zeros(len(dects))
             # create dictionary with amount of gts for each image
@@ -133,6 +137,7 @@ class Evaluator:
             # add class result in the dictionary to be returned
             r = {
                 'class': c,
+                'thresholds': ths,
                 'precision': prec,
                 'recall': rec,
                 'AP': ap,
@@ -143,6 +148,7 @@ class Evaluator:
                 'total FP': np.sum(FP)
             }
             ret.append(r)
+
         return ret
 
     def PlotPrecisionRecallCurve(self,
@@ -152,7 +158,8 @@ class Evaluator:
                                  showAP=False,
                                  showInterpolatedPrecision=False,
                                  savePath=None,
-                                 showGraphic=True):
+                                 showGraphic=True,
+                                 verbose=True):
         """PlotPrecisionRecallCurve
         Plot the Precision x Recall curve for a given class.
         Args:
@@ -184,7 +191,7 @@ class Evaluator:
             dict['total TP']: total number of True Positive detections;
             dict['total FP']: total number of False Negative detections;
         """
-        results = self.GetPascalVOCMetrics(boundingBoxes, IOUThreshold, method)
+        results = self.GetPascalVOCMetrics(boundingBoxes, IOUThreshold, method,verbose)
         result = None
         # Each resut represents a class
         for result in results:
